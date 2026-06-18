@@ -8,12 +8,16 @@ import {
   type NeutralResult,
   type StreamEvent,
 } from "../neutral/types.js";
+import type { Tier } from "../routing/anchors.js";
+import { runCouncilThenAct, shouldConvene } from "../panel/council.js";
 import { ImageRouteError, runPanel } from "../panel/orchestrator.js";
 import { ComplexityClassifier } from "../routing/classifier.js";
 import { Executor } from "../routing/failover.js";
 import {
   decideStatic,
+  disablePanelWhenTools,
   fromTier,
+  MAX_DEPTH,
   resolvePanel,
   type RouteDecision,
   type RouteOverride,
@@ -30,6 +34,10 @@ export interface RouteMeta {
   decision: RouteDecision;
   servedBy: string;
   panelMembers?: string[];
+  /** The actor model that executed an agentic council-then-act turn. */
+  actorId?: string;
+  /** Advisor models that deliberated before the actor acted (council-then-act). */
+  councilMembers?: string[];
 }
 
 export type RouteOutcome =
@@ -111,6 +119,19 @@ export class App {
       });
     }
 
+    // Invariant: a tool-bearing request must never hit the panel (it can't merge
+    // tool calls in v0 → the agent loop stalls). Degrade to single, loudly.
+    const hasTools = (req.tools?.length ?? 0) > 0;
+    const safe = disablePanelWhenTools(decision, hasTools);
+    if (safe !== decision) {
+      log.warn("tools present -> panel disabled; routing single", {
+        panel: decision.panelName,
+        tier: decision.tier,
+        reason: safe.reason,
+      });
+      decision = safe;
+    }
+
     // Panel route (validate the panel exists; otherwise degrade to single).
     if (
       decision.mode === "panel" &&
@@ -142,7 +163,57 @@ export class App {
         : { mode: "result", meta, result: outcome.result };
     }
 
-    // Single route over the tier's ring (orchestrator | compact | regular).
+    // Council-then-act: on a hard agentic (tool) turn, let a panel of advisors
+    // deliberate (text-only), then the pinned actor executes WITH the real tools
+    // plus that briefing. Classify here (tool turns normally skip the classifier);
+    // if it's unavailable, act without the council rather than failing the turn.
+    const council = this.config.routing.council;
+    if (council.enabled && hasTools && decision.mode === "single" && depth < MAX_DEPTH) {
+      let convene = false;
+      let tier: Tier | undefined;
+      try {
+        const cls = await this.classifier.classify(req, log);
+        tier = cls.tier;
+        convene = shouldConvene(cls.tier, council.trigger);
+        log.info("council gate", {
+          tier: cls.tier,
+          source: cls.source,
+          trigger: council.trigger,
+          convene,
+        });
+      } catch (err) {
+        log.warn("council gate: classifier unavailable; acting without council", {
+          error: (err as Error).message,
+        });
+      }
+      if (convene) {
+        const actorRing = this.state.singleRing(decision.poolName);
+        const outcome = await runCouncilThenAct(actorRing, req, depth, signal, {
+          executor: this.executor,
+          state: this.state,
+          resolver: this.resolver,
+          config: this.config,
+          upstreams: this.upstreams,
+          log,
+        });
+        const meta: RouteMeta = {
+          decision: tier ? { ...decision, tier } : decision,
+          servedBy: outcome.actorId,
+          actorId: outcome.actorId,
+          councilMembers: outcome.councilMembers,
+        };
+        log.info("served", {
+          servedBy: outcome.actorId,
+          council: outcome.councilMembers,
+          stream: req.stream,
+        });
+        return outcome.kind === "stream"
+          ? { mode: "stream", meta, stream: outcome.stream }
+          : { mode: "result", meta, result: outcome.result };
+      }
+    }
+
+    // Single route over the tier's ring (orchestrator | compact | regular | actor).
     const ring = this.state.singleRing(decision.poolName);
     const members = [...ring.members];
     log.info("route", {
@@ -185,6 +256,12 @@ export class App {
       outputTokens: result.usage.outputTokens,
       finishReason: result.stopReason,
     });
+    if (result.stopReason === "length") {
+      log.warn("response truncated at max_tokens", {
+        servedBy: id,
+        maxTokens: selection.maxTokens,
+      });
+    }
     return { mode: "result", meta: { decision, servedBy: id }, result };
   }
 }
@@ -196,6 +273,10 @@ export function fusionRouteHeader(meta: RouteMeta): string {
   parts.push(`served_by=${meta.servedBy}`);
   if (meta.panelMembers && meta.panelMembers.length > 0) {
     parts.push(`panel=${meta.panelMembers.join("+")}`);
+  }
+  if (meta.actorId) parts.push(`actor=${meta.actorId}`);
+  if (meta.councilMembers && meta.councilMembers.length > 0) {
+    parts.push(`council=${meta.councilMembers.join("+")}`);
   }
   if (meta.decision.scores) {
     const s = meta.decision.scores;

@@ -27,6 +27,61 @@ export interface PanelDeps {
   log?: Logger;
 }
 
+export interface MemberResult {
+  id: string;
+  result: NeutralResult;
+}
+
+/**
+ * Fan out a request to several members in parallel (non-streaming), honoring each
+ * member's circuit breaker. Shared by the panel (runPanel) and the council. Never
+ * throws on partial failure — returns the successful results plus the first error
+ * so the caller decides whether an empty set is fatal.
+ */
+export async function completeMembers(
+  members: string[],
+  memberReq: NeutralRequest,
+  memberOpts: UpstreamCallOptions,
+  deps: Pick<PanelDeps, "state" | "upstreams">,
+  log: Logger,
+  what = "panel",
+): Promise<{ good: MemberResult[]; firstError: unknown }> {
+  const { state, upstreams } = deps;
+  const settled = await Promise.allSettled(
+    members.map(async (id) => {
+      const breaker = state.breaker(id);
+      if (!breaker.canTry(Date.now())) throw new Error(`breaker open: ${id}`);
+      const upstream = upstreams.get(id);
+      if (!upstream) throw new Error(`unknown upstream: ${id}`);
+      const started = Date.now();
+      try {
+        const result = await upstream.complete({ ...memberReq, stream: false }, memberOpts);
+        breaker.onSuccess();
+        log.info(`${what} member ok`, {
+          member: id,
+          ms: Date.now() - started,
+          outputTokens: result.usage.outputTokens,
+        });
+        return { id, result };
+      } catch (err) {
+        const retryAfter = err instanceof UpstreamError ? err.retryAfterMs : null;
+        breaker.onFailure(Date.now(), retryAfter);
+        log.warn(`${what} member failed`, {
+          member: id,
+          ms: Date.now() - started,
+          error: (err as Error).message,
+        });
+        throw err;
+      }
+    }),
+  );
+  const good = settled
+    .filter((s): s is PromiseFulfilledResult<MemberResult> => s.status === "fulfilled")
+    .map((s) => s.value);
+  const firstError = settled.find((s) => s.status === "rejected");
+  return { good, firstError };
+}
+
 /**
  * Run a panel: fan out to members in parallel (non-streaming), then aggregate
  * with a judge selected round-robin from the orchestrator pool. Only the judge
@@ -39,7 +94,7 @@ export async function runPanel(
   signal: AbortSignal,
   deps: PanelDeps,
 ): Promise<PanelOutcome> {
-  const { executor, state, resolver, config, upstreams } = deps;
+  const { executor, state, resolver, config } = deps;
   const log = deps.log ?? logger;
   const ring = state.panelRing(panelName);
   if (!ring || ring.size === 0) {
@@ -68,47 +123,17 @@ export async function runPanel(
     ...(promptCacheKey ? { promptCacheKey } : {}),
   };
 
-  const settled = await Promise.allSettled(
-    activeMembers.map(async (id) => {
-      const breaker = state.breaker(id);
-      if (!breaker.canTry(Date.now())) throw new Error(`breaker open: ${id}`);
-      const upstream = upstreams.get(id);
-      if (!upstream) throw new Error(`unknown upstream: ${id}`);
-      const started = Date.now();
-      try {
-        const result = await upstream.complete({ ...memberReq, stream: false }, memberOpts);
-        breaker.onSuccess();
-        log.info("panel member ok", {
-          member: id,
-          ms: Date.now() - started,
-          outputTokens: result.usage.outputTokens,
-        });
-        return { id, result };
-      } catch (err) {
-        const retryAfter = err instanceof UpstreamError ? err.retryAfterMs : null;
-        breaker.onFailure(Date.now(), retryAfter);
-        log.warn("panel member failed", {
-          member: id,
-          ms: Date.now() - started,
-          error: (err as Error).message,
-        });
-        throw err;
-      }
-    }),
+  const { good, firstError } = await completeMembers(
+    activeMembers,
+    memberReq,
+    memberOpts,
+    deps,
+    log,
+    "panel",
   );
 
-  const good = settled
-    .filter(
-      (s): s is PromiseFulfilledResult<{ id: string; result: NeutralResult }> =>
-        s.status === "fulfilled",
-    )
-    .map((s) => s.value);
-
   if (good.length === 0) {
-    throw new RingExhaustedError(
-      activeMembers,
-      settled.find((s) => s.status === "rejected"),
-    );
+    throw new RingExhaustedError(activeMembers, firstError);
   }
 
   // Build the judge request from the panel answers.

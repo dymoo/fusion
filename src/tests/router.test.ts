@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { routingConfigSchema } from "../config/schema.js";
 import type { NeutralRequest } from "../neutral/types.js";
-import { decideStatic, fromTier } from "../routing/router.js";
+import { decideStatic, disablePanelWhenTools, fromTier } from "../routing/router.js";
 
 function userReq(text: string, extra: Partial<NeutralRequest> = {}): NeutralRequest {
   return {
@@ -41,11 +41,12 @@ describe("decideStatic", () => {
     assert.equal(d?.mode, "single");
   });
 
-  it("tools force single in smart mode", () => {
+  it("tools force single over the actor pool in smart mode", () => {
     const routing = routingConfigSchema.parse({ mode: "smart" });
     const req = userReq("design a system", { tools: [{ name: "f", parameters: {} }] });
     const d = decideStatic(req, routing, 0, {}, "default");
     assert.equal(d?.mode, "single");
+    assert.equal(d?.poolName, "actor");
   });
 
   it("override tier=plan → panel; tier=compact → single compact pool", () => {
@@ -77,5 +78,34 @@ describe("fromTier", () => {
   it("plan falls back to single when no panel name resolves", () => {
     const noPanel = routingConfigSchema.parse({ smart: { tiers: { plan: { panel: "" } } } });
     assert.equal(fromTier("plan", noPanel, undefined, "r").mode, "single");
+  });
+});
+
+describe("disablePanelWhenTools (tools ⇒ never panel)", () => {
+  const routing = routingConfigSchema.parse({});
+
+  it("downgrades a panel decision to single(orchestrator) when tools are present", () => {
+    const panel = fromTier("plan", routing, "default", "classified plan", {
+      compact: 0.2,
+      regular: 0.3,
+      plan: 0.6,
+    });
+    assert.equal(panel.mode, "panel");
+    const safe = disablePanelWhenTools(panel, true);
+    assert.equal(safe.mode, "single");
+    assert.equal(safe.poolName, "actor");
+    assert.equal(safe.tier, "plan"); // tier preserved for the x-fusion-route header
+    assert.deepEqual(safe.scores, { compact: 0.2, regular: 0.3, plan: 0.6 }); // scores preserved
+    assert.match(safe.reason, /tools->single/);
+  });
+
+  it("leaves a panel decision unchanged when there are no tools", () => {
+    const panel = fromTier("plan", routing, "default", "r");
+    assert.equal(disablePanelWhenTools(panel, false), panel);
+  });
+
+  it("leaves a single decision unchanged even with tools", () => {
+    const single = fromTier("regular", routing, "default", "r");
+    assert.equal(disablePanelWhenTools(single, true), single);
   });
 });

@@ -47,6 +47,8 @@ export const poolsConfigSchema = z.object({
   compact: z.array(z.string().min(1)).min(1).optional(),
   /** Single-route ring for the smart "regular" tier (defaults to first 2 orchestrator members). */
   regular: z.array(z.string().min(1)).min(1).optional(),
+  /** Single-route ring driving agentic/tool turns (the strong "actor"; defaults to orchestrator). */
+  actor: z.array(z.string().min(1)).min(1).optional(),
 });
 export type PoolsConfig = z.infer<typeof poolsConfigSchema>;
 
@@ -90,6 +92,28 @@ export const smartRoutingSchema = z
   .default({});
 export type SmartRoutingConfig = z.infer<typeof smartRoutingSchema>;
 
+/**
+ * Council-then-act: on hard agentic (tool-bearing) turns, a panel of advisor
+ * models deliberates as text (no tool execution), an optional judge condenses it
+ * into a briefing, and the pinned actor model runs WITH the real tools plus that
+ * briefing injected — mixture-of-agents made tool-compatible.
+ */
+export const councilConfigSchema = z
+  .object({
+    /** Convene the council on hard agentic turns. */
+    enabled: z.boolean().default(false),
+    /** Panel name whose members deliberate (advise) on the next step. */
+    panel: z.string().default("default"),
+    /** Minimum classified complexity to convene ("always" = every agentic turn). */
+    trigger: z.enum(["compact", "regular", "plan", "always"]).default("plan"),
+    /** Run a judge to condense advisor opinions into one briefing (else inject raw). */
+    synthesize: z.boolean().default(true),
+    /** Drop the session's actor model from the advisor set (diversity; it integrates anyway). */
+    excludeActor: z.boolean().default(true),
+  })
+  .default({});
+export type CouncilConfig = z.infer<typeof councilConfigSchema>;
+
 export const routingConfigSchema = z.object({
   /** single = one model + failover; smart = embedding tier classifier; all = panel (fuse everything). */
   mode: z.enum(["single", "smart", "all"]).default("smart"),
@@ -100,6 +124,7 @@ export const routingConfigSchema = z.object({
   /** Behaviour when an image is sent but no vision-capable model is available. */
   imageFallback: z.enum(["error", "strip"]).default("error"),
   smart: smartRoutingSchema,
+  council: councilConfigSchema,
 });
 export type RoutingConfig = z.infer<typeof routingConfigSchema>;
 

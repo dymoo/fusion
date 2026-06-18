@@ -56,9 +56,14 @@ pools:
   compact: [codex]
   # smart "regular" tier — round-robin between 1-2 models (defaults to first 2 of orchestrator).
   regular: [codex, openrouter]
-  # Named panels: the models that "give opinions" for panel routing / the "plan" tier.
+  # Agentic/tool turns drive through the "actor" ring — your strongest tool-driver,
+  # pinned per session via affinity (defaults to the orchestrator members if unset).
+  actor: [codex]
+  # Named panels: the models that "give opinions" for panel routing / the "plan" tier
+  # / the council advisors.
   panel:
     default: [codex, openrouter, ollama]
+    council: [openrouter, ollama] # council advisors (exclude the actor for diversity)
 
 routing:
   # single = always one model (round-robin + failover);
@@ -66,7 +71,13 @@ routing:
   # all    = always fuse (panel: every model + judge), i.e. OpenRouter-style Fusion.
   mode: smart
   defaultPanel: default
-  forceSingleWhenTools: true # agentic/tool requests stay single (no panel tool aggregation in v0)
+  # Agentic/tool requests (Claude Code, etc.) always route single. The panel is
+  # text-only fusion and CANNOT merge tool calls — sending a tool request there
+  # returns prose with no tool_use, which stalls the agent loop. `true` also skips
+  # the classifier on tool turns (cheap + deterministic). Even with `false`, a
+  # tool request is never sent to the panel (it degrades to single). Non-tool
+  # requests still get full smart routing (compact/regular/plan→panel).
+  forceSingleWhenTools: true
   imageFallback: error # error | strip  (when images present but no vision model)
   smart:
     # In-process ONNX code embedding model (downloaded once to the HF cache).
@@ -82,6 +93,16 @@ routing:
     # anchors: { compact: [...], regular: [...], plan: [...] }   # optional; sensible built-in defaults
     # Embeddings are the ONLY classifier — no token/keyword fallback. If the model
     # can't load, smart requests error (503) and /health shows classifier.error.
+  # Council-then-act: on hard agentic (tool) turns, a panel of advisor models
+  # deliberates as TEXT (no tool execution → no stall), an optional judge condenses
+  # it into a briefing, and the pinned `actor` model runs WITH the real tools + that
+  # briefing. This is how multi-model reasoning reaches tool-calling agents (the
+  # plain panel can't). Routine turns skip it (single actor, fast). Disabled by default.
+  council:
+    enabled: false
+    panel: council # advisor panel (deliberate; the actor model is auto-excluded)
+    trigger: plan # convene only on hard turns; "always" fuses every agentic turn
+    synthesize: true # judge condenses advisors into one briefing (false = inject raw)
 
 caching:
   anthropic:
@@ -91,7 +112,10 @@ caching:
   promptCacheKey:
     enabled: true
   sessionAffinity:
-    enabled: false # pin a session to its last upstream to maximize cache reads
+    # Pin a conversation to one upstream across turns. Recommended for agentic
+    # coding: keeps reasoning, tool_call linkage, and prompt-cache reads coherent
+    # over a long multi-turn session instead of round-robining a new model each turn.
+    enabled: true
 
 capabilities:
   refreshIntervalSec: 900

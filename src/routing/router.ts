@@ -108,8 +108,8 @@ export function decideStatic(
   if (routing.forceSingleWhenTools && (req.tools?.length ?? 0) > 0) {
     return {
       mode: "single",
-      poolName: "orchestrator",
-      reason: "tools present → single (no panel tool aggregation in v0)",
+      poolName: "actor",
+      reason: "tools present → single actor (no panel tool aggregation in v0)",
     };
   }
 
@@ -121,6 +121,31 @@ export function decideStatic(
       : { mode: "single", poolName: "orchestrator", reason: "mode=all but no panel → single" };
   }
   return null; // smart → caller classifies
+}
+
+/**
+ * Enforce the v0 invariant: a request carrying tools must never route to the
+ * panel. The panel fans out non-streaming and synthesizes ONE text answer via a
+ * judge — it cannot merge heterogeneous tool calls, so a tool-bearing request
+ * routed there comes back as prose with no `tool_use` block, which stalls an
+ * agent's loop (it has nothing to execute). When that would happen we degrade to
+ * single over the actor ring (round-robin + failover; with session affinity the
+ * conversation stays pinned to one model). Tier/scores are kept so the
+ * `x-fusion-route` header still reports what the classifier decided.
+ *
+ * This runs AFTER the decision is finalized, so it also closes the ordering hole
+ * where `x-fusion-route: all`, `x-fusion-tier: plan`, or `mode: all` reach the
+ * panel ahead of the `forceSingleWhenTools` guard in `decideStatic`.
+ */
+export function disablePanelWhenTools(decision: RouteDecision, hasTools: boolean): RouteDecision {
+  if (decision.mode !== "panel" || !hasTools) return decision;
+  return {
+    mode: "single",
+    poolName: "actor",
+    ...(decision.tier ? { tier: decision.tier } : {}),
+    ...(decision.scores ? { scores: decision.scores } : {}),
+    reason: `${decision.reason}; tools->single actor (panel can't aggregate tool calls in v0)`,
+  };
 }
 
 /** Resolve the panel name a smart "plan" decision should use. */

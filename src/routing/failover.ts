@@ -38,7 +38,7 @@ export class Executor {
     excluded: Set<string>,
   ): string {
     if (this.affinityEnabled) {
-      const pinned = this.state.affinity.get(sessionId);
+      const pinned = this.state.affinityFor(sessionId);
       if (pinned && ring.members.includes(pinned) && !excluded.has(pinned)) return pinned;
     }
     return ring.next();
@@ -62,7 +62,7 @@ export class Executor {
       try {
         const result = await upstream.complete(req, opts);
         breaker.onSuccess();
-        if (this.affinityEnabled) this.state.affinity.set(req.sessionId, id);
+        if (this.affinityEnabled) this.state.pinAffinity(req.sessionId, id);
         logger.debug("upstream attempt ok", { upstream: id, ms: Date.now() - attemptStart });
         return { id, result };
       } catch (err) {
@@ -116,7 +116,7 @@ export class Executor {
         continue;
       }
       breaker.onSuccess();
-      if (this.affinityEnabled) this.state.affinity.set(req.sessionId, id);
+      if (this.affinityEnabled) this.state.pinAffinity(req.sessionId, id);
       return { id, stream: wrapStream(first, iterator) };
     }
     throw new RingExhaustedError(ring.members, lastError);

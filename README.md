@@ -70,7 +70,7 @@ Run it in the foreground instead (useful for debugging): `fusion run`.
 | **`smart`** (default) | A local code-embedding model classifies each request into a complexity **tier** and routes it. |
 | `all`                 | Always fuse — fan out to the whole panel and aggregate with a judge (OpenRouter-Fusion style). |
 
-**Smart tiers:** `compact` (trivial → one fast model) · `regular` (normal work → round-robin 1–2 models) · `plan` (architecture/planning → the full panel + judge). The classifier embeds a few salient segments of the request (latest turn, recent turns, tool output, pasted code, system prompt) with an in-process ONNX **code** model, and also **semantically detects harness "plan mode" / "/compact"** so an actual plan-mode session fans out. It uses the GPU if available, and **never silently falls back** — if the model can't load, smart requests return 503 and `/health` shows the error.
+**Smart tiers:** `compact` (trivial → one fast model) · `regular` (normal work → round-robin 1–2 models) · `plan` (architecture/planning → the full panel + judge). The classifier embeds a few salient segments of the request (latest turn, recent turns, tool output, pasted code, system prompt) with an in-process ONNX **code** model, and also **semantically detects harness "plan mode" / "/compact"** so an actual plan-mode session fans out. It uses the GPU if available, and **never silently falls back** — if the model can't load, smart requests return 503 and `/health` shows the error. (Requests carrying `tools` are always served by a single model — the `plan`/panel tier applies only to tool-free requests; see [Limitations](#limitations).)
 
 ```
                        ┌─ single ─▶ orchestrator ring ─▶ [model A] ──(429)──▶ [model B] ✓
@@ -177,6 +177,8 @@ claude
 ```
 
 > The model is exposed as just **`fusion`**. (Claude Code's `/model` picker auto-discovery only lists ids prefixed `claude`/`anthropic`, so set `ANTHROPIC_MODEL=fusion` via env — that works regardless of the picker.)
+>
+> **Agentic multi-turn:** Claude Code sends `tools` every turn. Such requests are always served by **one** model — the **actor** pool (`pools.actor`, your strongest reasoner) — and with `caching.sessionAffinity.enabled: true` the whole session **pins to it** for coherent reasoning, tool-call linkage, and prompt-cache reuse across however many turns the session runs. On **hard** turns a **council** of advisor models deliberates first and the actor acts on their briefing (`routing.council`) — multi-model reasoning without stalling the loop. See [docs/ROUTING.md](docs/ROUTING.md); defaults live in [`config.example.yaml`](config.example.yaml).
 
 ### opencode
 
@@ -274,7 +276,7 @@ To control cost and usage allowances:
 
 - **Anthropic upstreams** get `cache_control` breakpoints injected on the stable prefix (tools + last system block, 1-hour TTL) and the last messages (5-minute TTL), capped at 4 breakpoints — so repeated turns read the cache at a fraction of the cost.
 - **OpenAI / Codex upstreams** get a stable `prompt_cache_key` per session (and Codex requests set `store: false`).
-- Optional **session affinity** (`caching.sessionAffinity.enabled`) pins a session to its last upstream to maximize cache reads; it coexists with round-robin (it only changes where failover starts, never removes a ring member).
+- **Session affinity** (`caching.sessionAffinity.enabled`, recommended on for agentic use) pins a session to one upstream — coherent multi-turn reasoning/tool-call linkage and maximal cache reads; it coexists with round-robin (it only changes where failover starts, never removes a ring member) and re-pins on failover. The pin map is bounded so a long-running daemon can't leak.
 
 ---
 
@@ -297,7 +299,7 @@ Environment overrides: `FUSION_PORT`, `FUSION_HOST`, `FUSION_AUTH_KEY`, `FUSION_
 
 ## Limitations
 
-- **No panel tool-call aggregation.** In panel mode the judge owns the final tool calls; members' tool calls are flattened into the judge prompt as text. Keep `forceSingleWhenTools: true` if your agent relies on multi-tool turns.
+- **The panel is text-only (no tool-call aggregation).** The panel fans out and synthesizes one answer via a judge; it cannot merge heterogeneous tool calls. So **any request carrying `tools` is automatically routed `single`, never the panel** — even under `mode: all` / `x-fusion-route: all` / `x-fusion-tier: plan`. This is what makes agentic coding (Claude Code) work over many turns; without it the agent would receive prose with no `tool_use` and stall. Tool-free requests still fuse via the panel. Multi-model reasoning _does_ reach tool turns via **council-then-act** (advisors deliberate as text → the actor runs with the real tools + their briefing); see [docs/ROUTING.md](docs/ROUTING.md).
 - **Smart mode needs the embedding model.** First run downloads it (~100–160 MB) to the HF cache; if it can't load, smart requests 503 (by design — no silent fallback). Use `single`/`all` offline.
 - **No config hot-reload.** Edit `config.yaml`, then `fusion restart`.
 - **No cost optimiser / eval harness** yet.

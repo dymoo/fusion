@@ -82,3 +82,33 @@ describe("Executor.complete failover", () => {
     await assert.rejects(() => exec.complete(state.orchestrator, req, opts), RingExhaustedError);
   });
 });
+
+describe("Executor session affinity", () => {
+  function countingUpstreams(): Map<string, Upstream> {
+    return new Map<string, Upstream>([
+      ["a", mockUpstream("a", () => Promise.resolve(okResult("a")))],
+      ["b", mockUpstream("b", () => Promise.resolve(okResult("b")))],
+    ]);
+  }
+
+  it("pins a session to the first-served model across turns (coherent multi-turn)", async () => {
+    const state = new RoutingState({ orchestrator: ["a", "b"], panel: {} });
+    const exec = new Executor(countingUpstreams(), state, true);
+    const first = await exec.complete(state.orchestrator, req, opts);
+    const second = await exec.complete(state.orchestrator, req, opts);
+    const third = await exec.complete(state.orchestrator, req, opts);
+    // Without affinity the ring would rotate a→b→a; affinity keeps it pinned.
+    assert.equal(second.id, first.id);
+    assert.equal(third.id, first.id);
+    assert.equal(state.affinityFor("s"), first.id);
+  });
+
+  it("does not pin when affinity is disabled (round-robins)", async () => {
+    const state = new RoutingState({ orchestrator: ["a", "b"], panel: {} });
+    const exec = new Executor(countingUpstreams(), state, false);
+    const first = await exec.complete(state.orchestrator, req, opts);
+    const second = await exec.complete(state.orchestrator, req, opts);
+    assert.notEqual(second.id, first.id);
+    assert.equal(state.affinityFor("s"), undefined);
+  });
+});

@@ -69,6 +69,21 @@ const REGISTRY: Entry[] = [
     match: /llama|mistral|mixtral|qwen|deepseek/i,
     caps: { tools: true, modalities: ["text"], contextWindow: 32_768, maxOutputTokens: 8_192 },
   },
+  // Zhipu GLM (e.g. glm-5.2) — tool-calling, long context.
+  {
+    match: /glm|zhipu|chatglm/i,
+    caps: { tools: true, modalities: ["text"], contextWindow: 131_072, maxOutputTokens: 32_768 },
+  },
+  // Moonshot Kimi (e.g. kimi-k2.7-code) — tool-calling, very long context.
+  {
+    match: /kimi|moonshot/i,
+    caps: { tools: true, modalities: ["text"], contextWindow: 262_144, maxOutputTokens: 32_768 },
+  },
+  // MiniMax (e.g. minimax-m3) — tool-calling, very long context.
+  {
+    match: /minimax|abab/i,
+    caps: { tools: true, modalities: ["text"], contextWindow: 524_288, maxOutputTokens: 32_768 },
+  },
 ];
 
 export function lookupModelsDev(modelId: string): Capabilities | undefined {

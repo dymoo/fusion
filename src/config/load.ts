@@ -78,12 +78,21 @@ function validateReferences(config: FusionConfig): void {
   checkPool("pools.orchestrator", config.pools.orchestrator);
   checkPool("pools.compact", config.pools.compact);
   checkPool("pools.regular", config.pools.regular);
+  checkPool("pools.actor", config.pools.actor);
   for (const [name, members] of Object.entries(config.pools.panel)) {
     checkPool(`pools.panel.${name}`, members);
   }
 
+  // Council advisors must resolve to a declared panel when enabled.
+  if (config.routing.council.enabled) {
+    const panel = config.routing.council.panel;
+    if (!(panel in config.pools.panel)) {
+      missing.push(`routing.council.panel → "${panel}" (no such panel)`);
+    }
+  }
+
   // Smart tier targets must resolve to a configured pool / panel.
-  const singlePoolNames = new Set(["orchestrator", "compact", "regular"]);
+  const singlePoolNames = new Set(["orchestrator", "compact", "regular", "actor"]);
   const { tiers } = config.routing.smart;
   const compactPool = tiers.compact.pool;
   const regularPool = tiers.regular.pool;
