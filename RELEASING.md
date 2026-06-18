@@ -23,7 +23,7 @@ Then on npmjs.com configure trusted publishing so all future releases are tokenl
   - Organization / owner: `dymoo`
   - Repository: `fusion`
   - Workflow filename: `release.yml`
-  - Environment: *(leave blank — `release.yml` does not use a GitHub Environment)*
+  - Environment: _(leave blank — `release.yml` does not use a GitHub Environment)_
 
 That's it — the package is live and CI can publish from here on.
 
