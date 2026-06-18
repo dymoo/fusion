@@ -35,6 +35,8 @@
   },
   "files": [
     "dist",
+    "!dist/tests",
+    "!dist/**/*.map",
     "config.example.yaml",
     "README.md",
     "LICENSE"
