@@ -27,6 +27,13 @@ export const upstreamConfigSchema = z.object({
   models: z.array(z.string()).optional(),
   /** Per-upstream capability overrides merged on top of discovery. */
   capabilityOverrides: capabilityOverridesSchema.optional(),
+  /**
+   * Reasoning effort. For codex (Responses API) this is the graded
+   * `reasoning.effort` (gpt-5.5 supports up to `xhigh`). For OpenAI-compatible
+   * upstreams it is sent as `reasoning_effort`. Omit to use the model default
+   * (Ollama Cloud thinking models reason by default).
+   */
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
   requestTimeoutMs: z.number().int().positive().default(120_000),
 });
 export type UpstreamConfig = z.infer<typeof upstreamConfigSchema>;

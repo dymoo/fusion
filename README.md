@@ -281,14 +281,14 @@ To control cost and usage allowances:
 
 See [`config.example.yaml`](./config.example.yaml) for a fully commented example. Top-level keys:
 
-| key            | purpose                                                                                                  |
-| -------------- | -------------------------------------------------------------------------------------------------------- |
-| `server`       | `host`, `port`, optional `authKey`                                                                       |
-| `upstreams[]`  | `id`, `type`, `baseURL?`, `apiKey?`/`apiKeyEnv?`, `models?`, `capabilityOverrides?`, `requestTimeoutMs?` |
-| `pools`        | `orchestrator: [ids]`, `panel: { name: [ids] }`                                                          |
-| `routing`      | `defaultMode`, `defaultPanel`, `forceSingleWhenTools`, `imageFallback`, `escalation{…}`                  |
-| `caching`      | `anthropic{enabled,maxBreakpoints,oneHour}`, `promptCacheKey{enabled}`, `sessionAffinity{enabled}`       |
-| `capabilities` | `refreshIntervalSec`                                                                                     |
+| key            | purpose                                                                                                                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `server`       | `host`, `port`, optional `authKey`                                                                                                                                                                     |
+| `upstreams[]`  | `id`, `type`, `baseURL?`, `apiKey?`/`apiKeyEnv?`, `models?`, `reasoningEffort?` (codex→`reasoning.effort` e.g. `xhigh`; OpenAI-compat→`reasoning_effort`), `capabilityOverrides?`, `requestTimeoutMs?` |
+| `pools`        | `orchestrator: [ids]`, `panel: { name: [ids] }`                                                                                                                                                        |
+| `routing`      | `defaultMode`, `defaultPanel`, `forceSingleWhenTools`, `imageFallback`, `escalation{…}`                                                                                                                |
+| `caching`      | `anthropic{enabled,maxBreakpoints,oneHour}`, `promptCacheKey{enabled}`, `sessionAffinity{enabled}`                                                                                                     |
+| `capabilities` | `refreshIntervalSec`                                                                                                                                                                                   |
 
 Environment overrides: `FUSION_PORT`, `FUSION_HOST`, `FUSION_AUTH_KEY`, `FUSION_CONFIG`, `FUSION_HOME`, `CODEX_HOME`, `FUSION_LOG_LEVEL`.
 

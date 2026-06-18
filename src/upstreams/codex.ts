@@ -21,12 +21,14 @@ export class CodexUpstream implements Upstream {
   private readonly auth: CodexAuth;
   private readonly timeoutMs: number;
   private readonly configuredModels: string[] | undefined;
+  private readonly reasoningEffort: string;
 
   constructor(config: UpstreamConfig, auth?: CodexAuth) {
     this.id = config.id;
     this.auth = auth ?? new CodexAuth();
     this.timeoutMs = config.requestTimeoutMs;
     this.configuredModels = config.models;
+    this.reasoningEffort = config.reasoningEffort ?? "medium";
   }
 
   private modelFor(req: NeutralRequest): string {
@@ -50,6 +52,7 @@ export class CodexUpstream implements Upstream {
     // The codex backend manages its own output budget; sending max_output_tokens
     // is rejected/ignored, mirroring opencode's behaviour for ChatGPT OAuth.
     delete body["max_output_tokens"];
+    body["reasoning"] = { effort: this.reasoningEffort, summary: "auto" };
     return body;
   }
 

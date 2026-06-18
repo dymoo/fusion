@@ -23,6 +23,7 @@ export class OpenAiUpstream implements Upstream {
   private readonly apiKey: string | undefined;
   private readonly timeoutMs: number;
   private readonly configuredModels: string[] | undefined;
+  private readonly reasoningEffort: string | undefined;
 
   constructor(private readonly config: UpstreamConfig) {
     this.id = config.id;
@@ -31,6 +32,7 @@ export class OpenAiUpstream implements Upstream {
     this.apiKey = resolveApiKey(config);
     this.timeoutMs = config.requestTimeoutMs;
     this.configuredModels = config.models;
+    this.reasoningEffort = config.reasoningEffort;
   }
 
   private headers(depth?: number): Record<string, string> {
@@ -47,6 +49,7 @@ export class OpenAiUpstream implements Upstream {
   async complete(req: NeutralRequest, opts: UpstreamCallOptions): Promise<NeutralResult> {
     const model = this.modelFor(req);
     const body = neutralToOpenaiBody({ ...req, stream: false }, model, opts);
+    if (this.reasoningEffort) body["reasoning_effort"] = this.reasoningEffort;
     const res = await sendRequest(
       this.id,
       `${this.baseURL}/chat/completions`,
@@ -65,6 +68,7 @@ export class OpenAiUpstream implements Upstream {
   async *stream(req: NeutralRequest, opts: UpstreamCallOptions): AsyncIterable<StreamEvent> {
     const model = this.modelFor(req);
     const body = neutralToOpenaiBody({ ...req, stream: true }, model, opts);
+    if (this.reasoningEffort) body["reasoning_effort"] = this.reasoningEffort;
     const res = await sendRequest(
       this.id,
       `${this.baseURL}/chat/completions`,

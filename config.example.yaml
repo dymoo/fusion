@@ -19,7 +19,16 @@ upstreams:
   - id: codex
     type: codex
     models: ["gpt-5.5"]
+    reasoningEffort: xhigh # gpt-5.5 supports low | medium | high | xhigh
 
+  # Ollama Cloud (OpenAI-compatible at ollama.com/v1; needs an API key).
+  # Thinking models (glm/kimi/minimax) reason by default — no effort flag needed.
+  # - id: glm
+  #   type: openai-compatible
+  #   baseURL: https://ollama.com/v1
+  #   apiKeyEnv: OLLAMA_API_KEY
+  #   models: ["glm-5.2"]
+  #   capabilityOverrides: { tools: true, modalities: [text], contextWindow: 1000000, maxOutputTokens: 32768 }
   # Local models via Ollama (OpenAI-compatible at /v1; capabilities via /api).
   - id: ollama
     type: ollama

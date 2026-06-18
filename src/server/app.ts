@@ -125,5 +125,6 @@ export function fusionRouteHeader(meta: RouteMeta): string {
     parts.push(`panel=${meta.panelMembers.join("+")}`);
   }
   parts.push(`reason=${meta.decision.reason.replace(/\s+/g, "_")}`);
-  return parts.join("; ");
+  // HTTP header values must be printable ASCII; strip anything else (e.g. "≥").
+  return parts.join("; ").replace(/[^\x20-\x7E]/g, "");
 }

@@ -74,7 +74,7 @@ export function decideRoute(
       return {
         mode: "panel",
         panelName,
-        reason: `escalated: ~${tokens} tokens ≥ ${routing.escalation.minPromptTokens}`,
+        reason: `escalated: ~${tokens} tokens >= ${routing.escalation.minPromptTokens}`,
       };
     }
     const text = lastUserText(req);

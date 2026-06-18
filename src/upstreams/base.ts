@@ -4,7 +4,18 @@ import { parseRetryAfter } from "../util/retry.js";
 import { UpstreamError } from "./types.js";
 
 export function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 409 || status === 429 || (status >= 500 && status <= 599);
+  // 401/403/404 from an upstream usually mean *that* provider is misconfigured
+  // (bad/missing key, wrong model) — fail over to the next upstream rather than
+  // killing the whole request. 5xx / timeouts / rate limits also fail over.
+  return (
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    (status >= 500 && status <= 599)
+  );
 }
 
 /** Resolve the API key for an upstream from inline config or an env var. */
