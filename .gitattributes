@@ -1,0 +1,6 @@
+# Normalize line endings to LF on all platforms so Prettier (endOfLine: "lf")
+# and the build behave identically on Windows, macOS, and Linux.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
