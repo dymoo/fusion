@@ -58,10 +58,12 @@ export class Executor {
       if (!breaker.canTry(Date.now())) continue;
       const upstream = this.upstreams.get(id);
       if (!upstream) continue;
+      const attemptStart = Date.now();
       try {
         const result = await upstream.complete(req, opts);
         breaker.onSuccess();
         if (this.affinityEnabled) this.state.affinity.set(req.sessionId, id);
+        logger.debug("upstream attempt ok", { upstream: id, ms: Date.now() - attemptStart });
         return { id, result };
       } catch (err) {
         if (err instanceof UpstreamError && !err.retryable) throw err;
@@ -69,6 +71,8 @@ export class Executor {
         breaker.onFailure(Date.now(), retryAfter);
         logger.warn("upstream failed, advancing ring", {
           upstream: id,
+          ms: Date.now() - attemptStart,
+          status: err instanceof UpstreamError ? err.status : null,
           error: (err as Error).message,
         });
         lastError = err;

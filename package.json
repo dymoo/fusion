@@ -52,6 +52,7 @@
     "prepublishOnly": "pnpm run check-all && pnpm run build"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"
   },

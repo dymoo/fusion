@@ -39,47 +39,67 @@ export const upstreamConfigSchema = z.object({
 export type UpstreamConfig = z.infer<typeof upstreamConfigSchema>;
 
 export const poolsConfigSchema = z.object({
-  /** Upstream ids forming the orchestrator/judge ring (also the single-route ring). */
+  /** Upstream ids forming the orchestrator/judge ring (also the default single-route ring). */
   orchestrator: z.array(z.string().min(1)).min(1),
   /** Named panels → ordered upstream ids that "give opinions". */
   panel: z.record(z.string(), z.array(z.string().min(1)).min(1)).default({}),
+  /** Single-route ring for the smart "compact" tier (defaults to [orchestrator[0]]). */
+  compact: z.array(z.string().min(1)).min(1).optional(),
+  /** Single-route ring for the smart "regular" tier (defaults to first 2 orchestrator members). */
+  regular: z.array(z.string().min(1)).min(1).optional(),
 });
 export type PoolsConfig = z.infer<typeof poolsConfigSchema>;
 
+/** In-process ONNX embedding model for the smart complexity classifier. */
+export const embeddingsConfigSchema = z.object({
+  /** Code-specific by default; small + fast. Override for a lighter model. */
+  model: z.string().default("jinaai/jina-embeddings-v2-base-code"),
+  dtype: z.enum(["fp32", "fp16", "q8", "int8", "uint8", "q4", "q4f16", "bnb4"]).default("q8"),
+});
+export type EmbeddingsConfig = z.infer<typeof embeddingsConfigSchema>;
+
+export const smartRoutingSchema = z
+  .object({
+    embeddings: embeddingsConfigSchema.default({}),
+    tiers: z
+      .object({
+        compact: z.object({ pool: z.string().default("compact") }).default({}),
+        regular: z.object({ pool: z.string().default("regular") }).default({}),
+        plan: z.object({ panel: z.string().default("default") }).default({}),
+      })
+      .default({}),
+    thresholds: z
+      .object({
+        /** Min cosine to a harness-mode anchor (plan mode / compaction) to force that tier. */
+        harnessConfidence: z.number().default(0.5),
+      })
+      .default({}),
+    /** Tier used only for a genuinely empty request (nothing to embed). */
+    fallbackTier: z.enum(["compact", "regular", "plan"]).default("regular"),
+    /** Override the built-in anchor phrases per tier. */
+    anchors: z
+      .object({
+        compact: z.array(z.string()).optional(),
+        regular: z.array(z.string()).optional(),
+        plan: z.array(z.string()).optional(),
+      })
+      .optional(),
+    /** Truncate the classified text to this many chars before embedding. */
+    maxTextChars: z.number().int().positive().default(4000),
+  })
+  .default({});
+export type SmartRoutingConfig = z.infer<typeof smartRoutingSchema>;
+
 export const routingConfigSchema = z.object({
-  defaultMode: z.enum(["single", "panel"]).default("single"),
-  /** Panel name used when escalating (defaults to the first defined panel). */
+  /** single = one model + failover; smart = embedding tier classifier; all = panel (fuse everything). */
+  mode: z.enum(["single", "smart", "all"]).default("smart"),
+  /** Panel name used by "all" mode and the smart "plan" tier. */
   defaultPanel: z.string().optional(),
-  escalation: z
-    .object({
-      enabled: z.boolean().default(true),
-      /** Escalate to panel when the prompt is at least this many estimated tokens. */
-      minPromptTokens: z.number().int().positive().default(1500),
-      /** Escalate when the latest user message contains any of these substrings. */
-      keywords: z
-        .array(z.string())
-        .default([
-          "compare",
-          "trade-off",
-          "tradeoff",
-          "design",
-          "architecture",
-          "debug",
-          "root cause",
-          "why is",
-          "options",
-        ]),
-      /** Optional cheap classifier call (upstream id + token budget) or null to skip. */
-      routerJudge: z
-        .object({ upstreamId: z.string().min(1), maxTokens: z.number().int().positive() })
-        .nullable()
-        .default(null),
-    })
-    .default({}),
   /** When true, agentic/tool-bearing requests are forced to single mode. */
   forceSingleWhenTools: z.boolean().default(true),
   /** Behaviour when an image is sent but no vision-capable model is available. */
   imageFallback: z.enum(["error", "strip"]).default("error"),
+  smart: smartRoutingSchema,
 });
 export type RoutingConfig = z.infer<typeof routingConfigSchema>;
 

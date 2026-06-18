@@ -3,10 +3,7 @@ import { describe, it } from "node:test";
 
 import { routingConfigSchema } from "../config/schema.js";
 import type { NeutralRequest } from "../neutral/types.js";
-import { decideRoute } from "../routing/router.js";
-
-const routing = routingConfigSchema.parse({});
-const panels = ["default"];
+import { decideStatic, fromTier } from "../routing/router.js";
 
 function userReq(text: string, extra: Partial<NeutralRequest> = {}): NeutralRequest {
   return {
@@ -18,42 +15,67 @@ function userReq(text: string, extra: Partial<NeutralRequest> = {}): NeutralRequ
   };
 }
 
-describe("decideRoute", () => {
-  it("defaults to single for a short, plain prompt", () => {
-    assert.equal(decideRoute(userReq("hello"), routing, 0, {}, panels).mode, "single");
+describe("decideStatic", () => {
+  it("returns null for smart mode (caller must classify)", () => {
+    const routing = routingConfigSchema.parse({ mode: "smart" });
+    assert.equal(decideStatic(userReq("hi"), routing, 0, {}, "default"), null);
   });
 
-  it("escalates to panel on a trigger keyword", () => {
-    const d = decideRoute(userReq("please compare these two designs"), routing, 0, {}, panels);
-    assert.equal(d.mode, "panel");
-    assert.equal(d.panelName, "default");
+  it("mode=single routes single over orchestrator", () => {
+    const routing = routingConfigSchema.parse({ mode: "single" });
+    const d = decideStatic(userReq("hi"), routing, 0, {}, "default");
+    assert.equal(d?.mode, "single");
+    assert.equal(d?.poolName, "orchestrator");
   });
 
-  it("override single beats escalation", () => {
-    assert.equal(
-      decideRoute(userReq("compare these"), routing, 0, { mode: "single" }, panels).mode,
-      "single",
-    );
+  it("mode=all routes panel", () => {
+    const routing = routingConfigSchema.parse({ mode: "all" });
+    const d = decideStatic(userReq("hi"), routing, 0, {}, "default");
+    assert.equal(d?.mode, "panel");
+    assert.equal(d?.panelName, "default");
   });
 
-  it("override panel selects a named panel", () => {
-    const d = decideRoute(userReq("hi"), routing, 0, { mode: "panel", panel: "default" }, panels);
-    assert.equal(d.mode, "panel");
+  it("recursion guard forces single regardless of mode", () => {
+    const routing = routingConfigSchema.parse({ mode: "all" });
+    const d = decideStatic(userReq("hi"), routing, 1, {}, "default");
+    assert.equal(d?.mode, "single");
   });
 
-  it("recursion guard forces single at depth>=1 even with a panel override", () => {
-    assert.equal(
-      decideRoute(userReq("compare"), routing, 1, { mode: "panel" }, panels).mode,
-      "single",
-    );
+  it("tools force single in smart mode", () => {
+    const routing = routingConfigSchema.parse({ mode: "smart" });
+    const req = userReq("design a system", { tools: [{ name: "f", parameters: {} }] });
+    const d = decideStatic(req, routing, 0, {}, "default");
+    assert.equal(d?.mode, "single");
   });
 
-  it("tool-bearing requests stay single", () => {
-    const req = userReq("compare these", { tools: [{ name: "f", parameters: {} }] });
-    assert.equal(decideRoute(req, routing, 0, {}, panels).mode, "single");
+  it("override tier=plan → panel; tier=compact → single compact pool", () => {
+    const routing = routingConfigSchema.parse({ mode: "single" });
+    const plan = decideStatic(userReq("hi"), routing, 0, { tier: "plan" }, "default");
+    assert.equal(plan?.mode, "panel");
+    const compact = decideStatic(userReq("hi"), routing, 0, { tier: "compact" }, "default");
+    assert.equal(compact?.mode, "single");
+    assert.equal(compact?.poolName, "compact");
   });
 
-  it("falls back to single when no panel is configured", () => {
-    assert.equal(decideRoute(userReq("compare"), routing, 0, {}, []).mode, "single");
+  it("override mode=all forces panel even when config is single", () => {
+    const routing = routingConfigSchema.parse({ mode: "single" });
+    const d = decideStatic(userReq("hi"), routing, 0, { mode: "all" }, "default");
+    assert.equal(d?.mode, "panel");
+  });
+});
+
+describe("fromTier", () => {
+  const routing = routingConfigSchema.parse({});
+  it("maps tiers to strategy + pool/panel", () => {
+    assert.equal(fromTier("compact", routing, "default", "r").poolName, "compact");
+    assert.equal(fromTier("regular", routing, "default", "r").poolName, "regular");
+    const plan = fromTier("plan", routing, "default", "r");
+    assert.equal(plan.mode, "panel");
+    assert.equal(plan.panelName, "default");
+  });
+
+  it("plan falls back to single when no panel name resolves", () => {
+    const noPanel = routingConfigSchema.parse({ smart: { tiers: { plan: { panel: "" } } } });
+    assert.equal(fromTier("plan", noPanel, undefined, "r").mode, "single");
   });
 });

@@ -5,7 +5,9 @@ import {
   neutralResultToAnthropic,
   neutralStreamToAnthropic,
 } from "../adapters/anthropic.js";
-import { flattenText, type NeutralRequest } from "../neutral/types.js";
+import { flattenText, hasImages, type NeutralRequest } from "../neutral/types.js";
+import { requestId } from "../util/id.js";
+import { logger } from "../util/logger.js";
 import { deriveSessionId } from "../util/session-id.js";
 import { type App, fusionRouteHeader } from "./app.js";
 import { parseDepth, parseOverrideHeaders } from "./request-context.js";
@@ -23,6 +25,7 @@ export async function handleAnthropicMessages(
   res: ServerResponse,
   signal: AbortSignal,
 ): Promise<void> {
+  const started = Date.now();
   const headers = flatHeaders(req);
   const body = await readJsonBody(req);
   const depth = parseDepth(headers);
@@ -30,8 +33,22 @@ export async function handleAnthropicMessages(
 
   const neutral = anthropicRequestToNeutral(body, "");
   neutral.sessionId = deriveSessionId(headers, stableSeed(neutral));
+  const log = logger.child({
+    reqId: requestId(),
+    sessionId: neutral.sessionId,
+    surface: "anthropic",
+  });
+  log.info("request", {
+    model: neutral.model,
+    stream: neutral.stream,
+    messages: neutral.messages.length,
+    tools: neutral.tools?.length ?? 0,
+    images: hasImages(neutral),
+    depth,
+    override,
+  });
 
-  const outcome = await app.route(neutral, override, depth, signal);
+  const outcome = await app.route(neutral, override, depth, signal, log);
   const routeHeader = fusionRouteHeader(outcome.meta);
 
   if (outcome.mode === "stream") {
@@ -40,11 +57,13 @@ export async function handleAnthropicMessages(
       res.write(chunk);
     }
     res.end();
+    log.info("response done", { stream: true, totalMs: Date.now() - started });
     return;
   }
   sendJson(res, 200, neutralResultToAnthropic(outcome.result, neutral.model), {
     "x-fusion-route": routeHeader,
   });
+  log.info("response done", { stream: false, totalMs: Date.now() - started });
 }
 
 export async function handleAnthropicCountTokens(

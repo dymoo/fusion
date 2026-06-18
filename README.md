@@ -2,8 +2,9 @@
 
 **A local fusion model provider.** It serves **OpenAI-compatible** and **Anthropic-compatible** HTTP endpoints, then routes each request to either a **single** upstream model or a **panel** of models whose answers an orchestrator/judge model fuses into one. Point Claude Code, opencode, or any OpenAI/Anthropic client at it.
 
-- One endpoint in front of your ChatGPT/Codex subscription, local Ollama, and any OpenAI-compatible API.
-- **Round-robin** load spreading across an orchestrator pool and a panel pool, with **graceful failover** on rate limits and errors.
+- One endpoint in front of your ChatGPT/Codex subscription, local/cloud Ollama, and any OpenAI-compatible API.
+- **Smart complexity routing** (default): a local, in-process code-embedding model classifies each request and routes trivial edits to one fast model, normal work round-robin across a couple, and real planning to the whole panel. See [docs/ROUTING.md](docs/ROUTING.md).
+- **Round-robin** load spreading with **graceful failover** on rate limits and errors.
 - **Capability negotiation**: only the least-capable intersection is exposed, `max_tokens` is clamped to the smallest model's limit, and images route only to vision-capable models.
 - **Token-caching discipline** (Anthropic `cache_control` breakpoints, OpenAI/Codex prompt-cache keys) to control cost.
 - Cross-platform **background daemon** (macOS, Windows, Linux). No native dependencies.
@@ -24,7 +25,7 @@
 - [Capabilities & limits](#capabilities--limits)
 - [Token caching](#token-caching)
 - [Configuration reference](#configuration-reference)
-- [v0 limitations](#v0-limitations)
+- [Limitations](#limitations)
 - [Run the tests](#run-the-tests)
 - [For AI agents](#for-ai-agents)
 - [License](#license)
@@ -61,29 +62,31 @@ Run it in the foreground instead (useful for debugging): `fusion run`.
 
 ## How routing works
 
-Every request resolves to one of two modes:
+`routing.mode` chooses the strategy — full details in **[docs/ROUTING.md](docs/ROUTING.md)**:
 
-**Single** (default). The request goes to one upstream chosen **round-robin** from the `orchestrator` pool. If that upstream is rate-limited or errors, Fusion **fails over** to the next one in the ring (honoring `Retry-After`, with a per-upstream circuit breaker). The client never sees the failure unless _every_ upstream is exhausted.
+| mode                  | behaviour                                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `single`              | Always one model — round-robin over `pools.orchestrator` with graceful failover.               |
+| **`smart`** (default) | A local code-embedding model classifies each request into a complexity **tier** and routes it. |
+| `all`                 | Always fuse — fan out to the whole panel and aggregate with a judge (OpenRouter-Fusion style). |
 
-**Panel** (escalated). The request fans out in parallel to the members of a named panel (the "models that give opinions"). Their answers are collected, and an **orchestrator/judge** model — selected round-robin from the `orchestrator` pool — synthesizes a single best answer. Only the judge's synthesis is streamed back.
+**Smart tiers:** `compact` (trivial → one fast model) · `regular` (normal work → round-robin 1–2 models) · `plan` (architecture/planning → the full panel + judge). The classifier embeds a few salient segments of the request (latest turn, recent turns, tool output, pasted code, system prompt) with an in-process ONNX **code** model, and also **semantically detects harness "plan mode" / "/compact"** so an actual plan-mode session fans out. It uses the GPU if available, and **never silently falls back** — if the model can't load, smart requests return 503 and `/health` shows the error.
 
 ```
                        ┌─ single ─▶ orchestrator ring ─▶ [model A] ──(429)──▶ [model B] ✓
-client ─▶ router ──────┤
-                       └─ panel ──▶ panel ring ─▶ [A] [B] [C]  ──▶  judge (orchestrator ring) ─▶ answer
+client ─▶ router ──────┤─ smart ──▶ classify(tier) ─▶ compact|regular → single   ·   plan → panel
+                       └─ all ────▶ panel ring ─▶ [A] [B] [C] ──▶ judge (orchestrator ring) ─▶ answer
 ```
-
-**When does it escalate to panel?** Fusion defaults to single and escalates only with a reason: a large prompt (`minPromptTokens`), a trigger keyword (`compare`, `design`, `debug`, …), or an explicit override. Tool-bearing (agentic) requests stay single by default.
 
 **Override the route per request:**
 
-- OpenAI body: `"extra_body": {"fusion_route": "panel", "panel": "default"}` (or `"single"`).
-- Header (any surface): `x-fusion-route: panel` and `x-fusion-panel: default`.
+- OpenAI body: `"extra_body": {"fusion_route": "single|smart|all|compact|regular|plan", "panel": "default"}` (or `"fusion_tier": "plan"`).
+- Header (any surface): `x-fusion-route: plan` (etc.), `x-fusion-tier: …`, `x-fusion-panel: …`.
 
 Every response carries a debug header showing what happened:
 
 ```
-x-fusion-route: mode=panel; served_by=codex; panel=codex+local+openrouter; reason=escalated:_keyword_"design"
+x-fusion-route: mode=single; tier=regular; served_by=kimi; scores=compact:0.19,regular:0.41,plan:0.27; reason=smart[embedding]:_latest+system_→_regular=0.41
 ```
 
 A recursion guard (`x-fusion-depth`) prevents a Fusion instance pointed at another Fusion from re-triggering a panel.
@@ -169,13 +172,11 @@ Claude Code speaks the Anthropic Messages format, so point it at Fusion's Anthro
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8787
 export ANTHROPIC_AUTH_TOKEN=test            # only needed if you set server.authKey
-export ANTHROPIC_MODEL=claude-fusion        # map the default model to a Fusion model
-# optional: surface Fusion models in the /model picker
-export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+export ANTHROPIC_MODEL=fusion               # route everything through the fusion router
 claude
 ```
 
-> Claude Code's gateway model discovery only lists models whose id starts with `claude`/`anthropic`. Fusion advertises a `claude-fusion` alias for exactly this reason — use it (or set `ANTHROPIC_MODEL`).
+> The model is exposed as just **`fusion`**. (Claude Code's `/model` picker auto-discovery only lists ids prefixed `claude`/`anthropic`, so set `ANTHROPIC_MODEL=fusion` via env — that works regardless of the picker.)
 
 ### opencode
 
@@ -189,10 +190,10 @@ Add an OpenAI-compatible provider to `opencode.json` (project) or `~/.config/ope
       "npm": "@ai-sdk/openai-compatible",
       "name": "Fusion",
       "options": { "baseURL": "http://localhost:8787/v1", "apiKey": "test" },
-      "models": { "fusion/coder": { "name": "Fusion Coder" } }
+      "models": { "fusion": { "name": "Fusion" } }
     }
   },
-  "model": "fusion/fusion/coder"
+  "model": "fusion/fusion"
 }
 ```
 
@@ -201,7 +202,7 @@ Add an OpenAI-compatible provider to `opencode.json` (project) or `~/.config/ope
 ```
 Base URL: http://localhost:8787/v1
 API key:  test            (any value, unless server.authKey is set)
-Model:    fusion/coder
+Model:    fusion
 ```
 
 ---
@@ -227,28 +228,28 @@ curl -s http://localhost:8787/v1/models | jq
 # Single route (simple prompt)
 curl -s http://localhost:8787/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"fusion/coder","messages":[{"role":"user","content":"Say hello in one sentence."}],"temperature":0.2}' | jq
+  -d '{"model":"fusion","messages":[{"role":"user","content":"Say hello in one sentence."}],"temperature":0.2}' | jq
 
 # Panel route (hard prompt escalates) — inspect the x-fusion-route header
 curl -si http://localhost:8787/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"fusion/coder","messages":[{"role":"user","content":"I have a FastAPI service with intermittent deadlocks under load (async SQLAlchemy + Postgres). Give me a debugging plan, likely root causes, and code-level fixes."}]}' \
+  -d '{"model":"fusion","messages":[{"role":"user","content":"I have a FastAPI service with intermittent deadlocks under load (async SQLAlchemy + Postgres). Give me a debugging plan, likely root causes, and code-level fixes."}]}' \
   | grep -i x-fusion-route
 
 # Streaming
 curl -N http://localhost:8787/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"fusion/coder","stream":true,"messages":[{"role":"user","content":"Stream a haiku."}]}'
+  -d '{"model":"fusion","stream":true,"messages":[{"role":"user","content":"Stream a haiku."}]}'
 
 # Anthropic surface (what Claude Code uses)
 curl -s http://localhost:8787/v1/messages \
   -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
-  -d '{"model":"claude-fusion","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}' | jq
+  -d '{"model":"fusion","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}' | jq
 
 # Force a panel via header
 curl -si http://localhost:8787/v1/chat/completions \
   -H 'Content-Type: application/json' -H 'x-fusion-route: panel' \
-  -d '{"model":"fusion/coder","messages":[{"role":"user","content":"Design a rate limiter."}]}' | grep -i x-fusion-route
+  -d '{"model":"fusion","messages":[{"role":"user","content":"Design a rate limiter."}]}' | grep -i x-fusion-route
 ```
 
 ---
@@ -285,21 +286,21 @@ See [`config.example.yaml`](./config.example.yaml) for a fully commented example
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `server`       | `host`, `port`, optional `authKey`                                                                                                                                                                     |
 | `upstreams[]`  | `id`, `type`, `baseURL?`, `apiKey?`/`apiKeyEnv?`, `models?`, `reasoningEffort?` (codex→`reasoning.effort` e.g. `xhigh`; OpenAI-compat→`reasoning_effort`), `capabilityOverrides?`, `requestTimeoutMs?` |
-| `pools`        | `orchestrator: [ids]`, `panel: { name: [ids] }`                                                                                                                                                        |
-| `routing`      | `defaultMode`, `defaultPanel`, `forceSingleWhenTools`, `imageFallback`, `escalation{…}`                                                                                                                |
+| `pools`        | `orchestrator: [ids]`, `compact?: [ids]`, `regular?: [ids]`, `panel: { name: [ids] }`                                                                                                                  |
+| `routing`      | `mode` (`single`/`smart`/`all`), `defaultPanel`, `forceSingleWhenTools`, `imageFallback`, `smart{embeddings,tiers,thresholds,fallbackTier}` — see [docs/ROUTING.md](docs/ROUTING.md)                   |
 | `caching`      | `anthropic{enabled,maxBreakpoints,oneHour}`, `promptCacheKey{enabled}`, `sessionAffinity{enabled}`                                                                                                     |
 | `capabilities` | `refreshIntervalSec`                                                                                                                                                                                   |
 
-Environment overrides: `FUSION_PORT`, `FUSION_HOST`, `FUSION_AUTH_KEY`, `FUSION_CONFIG`, `FUSION_HOME`, `CODEX_HOME`, `FUSION_LOG_LEVEL`.
+Environment overrides: `FUSION_PORT`, `FUSION_HOST`, `FUSION_AUTH_KEY`, `FUSION_CONFIG`, `FUSION_HOME`, `CODEX_HOME`, `FUSION_LOG_LEVEL` (`debug` for full lifecycle), and embedder knobs `FUSION_EMBED_MODEL`, `FUSION_EMBED_DTYPE`, `FUSION_EMBED_DEVICE` (`auto` uses GPU if available), `FUSION_EMBED_CACHE`. See [docs/LOGGING.md](docs/LOGGING.md).
 
 ---
 
-## v0 limitations
+## Limitations
 
-- **No panel tool-call aggregation.** In panel mode the judge owns the final tool calls; members' tool calls are flattened into the judge prompt as text. Agentic/tool-bearing sessions default to single mode.
+- **No panel tool-call aggregation.** In panel mode the judge owns the final tool calls; members' tool calls are flattened into the judge prompt as text. Keep `forceSingleWhenTools: true` if your agent relies on multi-tool turns.
+- **Smart mode needs the embedding model.** First run downloads it (~100–160 MB) to the HF cache; if it can't load, smart requests 503 (by design — no silent fallback). Use `single`/`all` offline.
 - **No config hot-reload.** Edit `config.yaml`, then `fusion restart`.
 - **No cost optimiser / eval harness** yet.
-- **Model auto-discovery** is limited to provider-native sources + a bundled models.dev snapshot.
 - **Panel latency**: panel members run non-streaming and are buffered before the judge streams; the first token appears only once the judge starts.
 
 ---
@@ -322,17 +323,22 @@ Machine-readable setup:
 provider: openai-compatible # also exposes an anthropic-compatible surface
 base_url: http://localhost:8787/v1 # Anthropic clients: http://localhost:8787
 api_key: test # any value unless server.authKey is set
-models: [fusion/coder, fusion/panel, claude-fusion]
+models: [fusion]
 openai_endpoints: [GET /v1/models, POST /v1/chat/completions]
 anthropic_endpoints: [POST /v1/messages, POST /v1/messages/count_tokens, GET /v1/models]
 route_override:
-  body: { extra_body: { fusion_route: "single|panel", panel: "<name>" } }
-  header: { x-fusion-route: "single|panel", x-fusion-panel: "<name>" }
-debug_header: x-fusion-route # on every response: mode, served_by, panel, reason
-streaming: supported # single route + panel judge synthesis
+  body: { extra_body: { fusion_route: "single|smart|all|compact|regular|plan", panel: "<name>" } }
+  header:
+    {
+      x-fusion-route: "single|smart|all|compact|regular|plan",
+      x-fusion-tier: "…",
+      x-fusion-panel: "<name>",
+    }
+debug_header: x-fusion-route # on every response: mode, tier, served_by, scores, reason
+streaming: supported # single/tier route + panel judge synthesis
 ```
 
-To install and run autonomously: `npm i -g @dymoo/fusion`, write a `config.yaml` (copy `config.example.yaml`), then `fusion start`. Probe `GET /health` for readiness; it returns the configured upstreams, pools, and the exposed capability floor.
+To install and run autonomously: `npm i -g @dymoo/fusion`, write a `config.yaml` (copy `config.example.yaml`), then `fusion start`. Probe `GET /health` for readiness (it reports upstreams, pools, the capability floor, and the smart-classifier status). Routing internals: [docs/ROUTING.md](docs/ROUTING.md); logs: [docs/LOGGING.md](docs/LOGGING.md).
 
 ---
 

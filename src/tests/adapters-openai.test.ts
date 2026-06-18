@@ -69,11 +69,13 @@ describe("openaiRequestToNeutral", () => {
     }
   });
 
-  it("parses route overrides", () => {
-    assert.deepEqual(parseOpenaiRouteOverride({ fusion_route: "panel", panel: "debug" }), {
-      mode: "panel",
+  it("parses route overrides (mode + tier)", () => {
+    assert.deepEqual(parseOpenaiRouteOverride({ fusion_route: "all", panel: "debug" }), {
+      mode: "all",
       panel: "debug",
     });
+    assert.deepEqual(parseOpenaiRouteOverride({ fusion_route: "plan" }), { tier: "plan" });
+    assert.deepEqual(parseOpenaiRouteOverride({ fusion_tier: "compact" }), { tier: "compact" });
   });
 });
 

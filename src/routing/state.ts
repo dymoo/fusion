@@ -6,6 +6,8 @@ import { RoundRobinRing } from "./ring.js";
 export class RoutingState {
   readonly orchestrator: RoundRobinRing<string>;
   readonly panels: Map<string, RoundRobinRing<string>>;
+  /** Named single-route rings used by smart tiers: orchestrator | compact | regular. */
+  private readonly singleRings: Map<string, RoundRobinRing<string>>;
   private readonly breakers = new Map<string, CircuitBreaker>();
   readonly affinity = new Map<string, string>();
 
@@ -14,6 +16,19 @@ export class RoutingState {
     this.panels = new Map(
       Object.entries(pools.panel).map(([name, members]) => [name, new RoundRobinRing(members)]),
     );
+    const first = pools.orchestrator[0] as string;
+    const compact = pools.compact ?? [first];
+    const regular = pools.regular ?? pools.orchestrator.slice(0, 2);
+    this.singleRings = new Map([
+      ["orchestrator", this.orchestrator],
+      ["compact", new RoundRobinRing(compact)],
+      ["regular", new RoundRobinRing(regular)],
+    ]);
+  }
+
+  /** Resolve a single-route ring by name, falling back to the orchestrator ring. */
+  singleRing(name: string | undefined): RoundRobinRing<string> {
+    return (name && this.singleRings.get(name)) || this.orchestrator;
   }
 
   breaker(id: string): CircuitBreaker {

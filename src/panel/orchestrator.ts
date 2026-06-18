@@ -8,6 +8,7 @@ import { selectCandidates, stripImagesFromRequest } from "../routing/selection.j
 import type { RoutingState } from "../routing/state.js";
 import type { UpstreamCallOptions } from "../upstreams/types.js";
 import { UpstreamError } from "../upstreams/types.js";
+import { type Logger, logger } from "../util/logger.js";
 import { JUDGE_SYSTEM, originalUserText, renderJudgePrompt } from "./prompts.js";
 
 export type PanelOutcome =
@@ -23,6 +24,7 @@ export interface PanelDeps {
     string,
     { complete: (req: NeutralRequest, opts: UpstreamCallOptions) => Promise<NeutralResult> }
   >;
+  log?: Logger;
 }
 
 /**
@@ -38,6 +40,7 @@ export async function runPanel(
   deps: PanelDeps,
 ): Promise<PanelOutcome> {
   const { executor, state, resolver, config, upstreams } = deps;
+  const log = deps.log ?? logger;
   const ring = state.panelRing(panelName);
   if (!ring || ring.size === 0) {
     throw new Error(`Panel "${panelName}" has no members`);
@@ -49,6 +52,11 @@ export async function runPanel(
   if (selection.error) throw new ImageRouteError(selection.error);
   const memberReq = selection.stripImages ? stripImagesFromRequest(req) : req;
   const activeMembers = ordered.filter((id) => !selection.excluded.has(id));
+  log.info("panel fan-out", {
+    panel: panelName,
+    members: activeMembers,
+    maxTokens: selection.maxTokens,
+  });
 
   const promptCacheKey = config.caching.promptCacheKey.enabled
     ? `fusion-${req.sessionId}`
@@ -66,13 +74,24 @@ export async function runPanel(
       if (!breaker.canTry(Date.now())) throw new Error(`breaker open: ${id}`);
       const upstream = upstreams.get(id);
       if (!upstream) throw new Error(`unknown upstream: ${id}`);
+      const started = Date.now();
       try {
         const result = await upstream.complete({ ...memberReq, stream: false }, memberOpts);
         breaker.onSuccess();
+        log.info("panel member ok", {
+          member: id,
+          ms: Date.now() - started,
+          outputTokens: result.usage.outputTokens,
+        });
         return { id, result };
       } catch (err) {
         const retryAfter = err instanceof UpstreamError ? err.retryAfterMs : null;
         breaker.onFailure(Date.now(), retryAfter);
+        log.warn("panel member failed", {
+          member: id,
+          ms: Date.now() - started,
+          error: (err as Error).message,
+        });
         throw err;
       }
     }),
@@ -119,6 +138,7 @@ export async function runPanel(
     ...(promptCacheKey ? { promptCacheKey } : {}),
   };
   const panelMembers = good.map((g) => g.id);
+  log.info("panel judging", { members: panelMembers, judgeMaxTokens: judgeOpts.maxTokens });
 
   if (req.stream) {
     const { id: judgeId, stream } = await executor.openStream(

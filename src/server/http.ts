@@ -8,6 +8,7 @@ import {
 import { CodexAuthError } from "../auth/codex.js";
 import type { FusionConfig } from "../config/schema.js";
 import { ImageRouteError } from "../panel/orchestrator.js";
+import { ClassifierUnavailableError } from "../routing/classifier.js";
 import { RingExhaustedError } from "../routing/failover.js";
 import { logger } from "../util/logger.js";
 import { packageVersion } from "../util/version.js";
@@ -28,6 +29,7 @@ function statusFor(err: unknown): number {
   if (err instanceof ImageRouteError) return 400;
   if (err instanceof RingExhaustedError) return 502;
   if (err instanceof CodexAuthError) return 401;
+  if (err instanceof ClassifierUnavailableError) return 503;
   return 500;
 }
 
@@ -84,9 +86,11 @@ async function handle(
     sendJson(res, 200, {
       status: "ok",
       version: packageVersion(),
+      mode: app.config.routing.mode,
       upstreams: [...app.upstreams.keys()],
       orchestrator: [...app.state.orchestrator.members],
       panels: [...app.state.panels.keys()],
+      ...(app.config.routing.mode === "smart" ? { classifier: app.classifier.ready() } : {}),
       floor: app.modelFloor(),
     });
     return;

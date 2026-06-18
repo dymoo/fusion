@@ -50,22 +50,38 @@ upstreams:
 
 # Routing pools.
 pools:
-  # The orchestrator/judge ring (also the single-route ring). Round-robin + failover.
+  # The orchestrator/judge ring (judge for panels + default single-route ring). Round-robin + failover.
   orchestrator: [codex, openrouter]
-  # Named panels: the models that "give opinions" for panel routing.
+  # smart "compact" tier — one fast model for trivial requests (defaults to [orchestrator[0]]).
+  compact: [codex]
+  # smart "regular" tier — round-robin between 1-2 models (defaults to first 2 of orchestrator).
+  regular: [codex, openrouter]
+  # Named panels: the models that "give opinions" for panel routing / the "plan" tier.
   panel:
     default: [codex, openrouter, ollama]
 
 routing:
-  defaultMode: single # default to a single model; escalate to panel only with reason
+  # single = always one model (round-robin + failover);
+  # smart  = local embedding model classifies request complexity into a tier (see docs/ROUTING.md);
+  # all    = always fuse (panel: every model + judge), i.e. OpenRouter-style Fusion.
+  mode: smart
   defaultPanel: default
   forceSingleWhenTools: true # agentic/tool requests stay single (no panel tool aggregation in v0)
   imageFallback: error # error | strip  (when images present but no vision model)
-  escalation:
-    enabled: true
-    minPromptTokens: 1500
-    keywords: ["compare", "trade-off", "design", "architecture", "debug", "root cause"]
-    routerJudge: null # reserved for a future cheap classifier call
+  smart:
+    # In-process ONNX code embedding model (downloaded once to the HF cache).
+    # Lighter alternative: { model: Xenova/all-MiniLM-L6-v2, dtype: q8 }
+    embeddings: { model: jinaai/jina-embeddings-v2-base-code, dtype: q8 }
+    tiers:
+      compact: { pool: compact } # → single
+      regular: { pool: regular } # → single, round-robin
+      plan: { panel: default } # → all (panel + judge)
+    # Min cosine to a harness-mode anchor (plan-mode / compaction prompt) to force that tier.
+    thresholds: { harnessConfidence: 0.5 }
+    fallbackTier: regular # only used for a genuinely empty request
+    # anchors: { compact: [...], regular: [...], plan: [...] }   # optional; sensible built-in defaults
+    # Embeddings are the ONLY classifier — no token/keyword fallback. If the model
+    # can't load, smart requests error (503) and /health shows classifier.error.
 
 caching:
   anthropic:

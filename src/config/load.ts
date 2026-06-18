@@ -66,22 +66,44 @@ export function parseConfig(source: string): FusionConfig {
   return parsed.data;
 }
 
-/** Ensure every pool references a declared upstream id. */
+/** Ensure every pool/tier references a declared upstream id (or pool/panel). */
 function validateReferences(config: FusionConfig): void {
   const ids = new Set(config.upstreams.map((u) => u.id));
   const missing: string[] = [];
-  for (const id of config.pools.orchestrator) {
-    if (!ids.has(id)) missing.push(`pools.orchestrator → "${id}"`);
-  }
-  for (const [name, members] of Object.entries(config.pools.panel)) {
-    for (const id of members) {
-      if (!ids.has(id)) missing.push(`pools.panel.${name} → "${id}"`);
+  const checkPool = (label: string, members: readonly string[] | undefined): void => {
+    for (const id of members ?? []) {
+      if (!ids.has(id)) missing.push(`${label} → "${id}"`);
     }
+  };
+  checkPool("pools.orchestrator", config.pools.orchestrator);
+  checkPool("pools.compact", config.pools.compact);
+  checkPool("pools.regular", config.pools.regular);
+  for (const [name, members] of Object.entries(config.pools.panel)) {
+    checkPool(`pools.panel.${name}`, members);
   }
-  const judge = config.routing.escalation.routerJudge?.upstreamId;
-  if (judge && !ids.has(judge)) missing.push(`routing.escalation.routerJudge → "${judge}"`);
+
+  // Smart tier targets must resolve to a configured pool / panel.
+  const singlePoolNames = new Set(["orchestrator", "compact", "regular"]);
+  const { tiers } = config.routing.smart;
+  const compactPool = tiers.compact.pool;
+  const regularPool = tiers.regular.pool;
+  const planPanel = tiers.plan.panel;
+  if (config.pools.compact === undefined && compactPool === "compact") {
+    // ok: falls back to orchestrator[0] at runtime
+  } else if (!singlePoolNames.has(compactPool)) {
+    missing.push(`routing.smart.tiers.compact.pool → "${compactPool}" (not a single-route pool)`);
+  }
+  if (config.pools.regular === undefined && regularPool === "regular") {
+    // ok: falls back to orchestrator slice at runtime
+  } else if (!singlePoolNames.has(regularPool)) {
+    missing.push(`routing.smart.tiers.regular.pool → "${regularPool}" (not a single-route pool)`);
+  }
+  if (Object.keys(config.pools.panel).length > 0 && !(planPanel in config.pools.panel)) {
+    missing.push(`routing.smart.tiers.plan.panel → "${planPanel}" (no such panel)`);
+  }
+
   if (missing.length > 0) {
-    throw new ConfigError(`Config references unknown upstream ids:\n  ${missing.join("\n  ")}`);
+    throw new ConfigError(`Config references unknown ids:\n  ${missing.join("\n  ")}`);
   }
 }
 

@@ -151,16 +151,25 @@ export function openaiRequestToNeutral(body: unknown, sessionId: string): Neutra
   };
 }
 
-/** Parse Fusion route override from extra request fields. */
+/** Parse Fusion route override from extra request fields (extra_body). */
 export function parseOpenaiRouteOverride(body: unknown): {
-  mode?: "single" | "panel";
+  mode?: "single" | "smart" | "all";
+  tier?: "compact" | "regular" | "plan";
   panel?: string;
 } {
   const obj = asObject(body);
   const route = getString(obj, "fusion_route");
+  const tierField = getString(obj, "fusion_tier");
   const panel = getString(obj, "panel");
-  const out: { mode?: "single" | "panel"; panel?: string } = {};
-  if (route === "single" || route === "panel") out.mode = route;
+  const out: {
+    mode?: "single" | "smart" | "all";
+    tier?: "compact" | "regular" | "plan";
+    panel?: string;
+  } = {};
+  if (route === "single" || route === "smart" || route === "all") out.mode = route;
+  else if (route === "compact" || route === "regular" || route === "plan") out.tier = route;
+  if (tierField === "compact" || tierField === "regular" || tierField === "plan")
+    out.tier = tierField;
   if (panel) out.panel = panel;
   return out;
 }
