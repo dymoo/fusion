@@ -1,0 +1,72 @@
+# Fusion provider configuration.
+# Copy this file to `config.yaml` (it is git-ignored) and edit for your setup.
+# Env overrides: FUSION_PORT, FUSION_HOST, FUSION_AUTH_KEY, FUSION_CONFIG, FUSION_HOME.
+
+server:
+  host: 127.0.0.1
+  port: 8787
+  # Optional. If set, clients must send it as `Authorization: Bearer <key>` or
+  # `x-api-key: <key>`. Leave unset for unauthenticated local use.
+  # authKey: "test"
+
+# Upstream models Fusion can route to.
+# type: openai | openai-compatible | anthropic | codex | ollama
+upstreams:
+  # Your ChatGPT/Codex subscription, reusing the local `codex` CLI login
+  # (~/.codex/auth.json) or `fusion auth login`. No API key needed.
+  # models: omit to expose every model in ~/.codex/models_cache.json.
+  # gpt-5.5 is the current OpenAI SOTA model; gpt-5.4 / gpt-5.4-mini also work.
+  - id: codex
+    type: codex
+    models: ["gpt-5.5"]
+
+  # Local models via Ollama (OpenAI-compatible at /v1; capabilities via /api).
+  - id: ollama
+    type: ollama
+    baseURL: http://localhost:11434/v1
+    # models: ["qwen2.5-coder:14b", "llama3.2-vision"]   # omit to auto-discover
+
+  # Any OpenAI-compatible endpoint (OpenRouter, vLLM, LM Studio, Together, ...).
+  - id: openrouter
+    type: openai-compatible
+    baseURL: https://openrouter.ai/api/v1
+    apiKeyEnv: OPENROUTER_API_KEY
+    models: ["anthropic/claude-sonnet-4.5"]
+
+  # Anthropic API (optional panel member; needs an API key).
+  # - id: anthropic
+  #   type: anthropic
+  #   apiKeyEnv: ANTHROPIC_API_KEY
+  #   models: ["claude-sonnet-4-5"]
+
+# Routing pools.
+pools:
+  # The orchestrator/judge ring (also the single-route ring). Round-robin + failover.
+  orchestrator: [codex, openrouter]
+  # Named panels: the models that "give opinions" for panel routing.
+  panel:
+    default: [codex, openrouter, ollama]
+
+routing:
+  defaultMode: single # default to a single model; escalate to panel only with reason
+  defaultPanel: default
+  forceSingleWhenTools: true # agentic/tool requests stay single (no panel tool aggregation in v0)
+  imageFallback: error # error | strip  (when images present but no vision model)
+  escalation:
+    enabled: true
+    minPromptTokens: 1500
+    keywords: ["compare", "trade-off", "design", "architecture", "debug", "root cause"]
+    routerJudge: null # reserved for a future cheap classifier call
+
+caching:
+  anthropic:
+    enabled: true
+    maxBreakpoints: 4
+    oneHour: true
+  promptCacheKey:
+    enabled: true
+  sessionAffinity:
+    enabled: false # pin a session to its last upstream to maximize cache reads
+
+capabilities:
+  refreshIntervalSec: 900

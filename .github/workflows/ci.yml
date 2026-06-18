@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  check-and-test:
+    name: check-all + test (${{ matrix.os }} Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: [22, 24]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run check-all (format + lint + typecheck)
+        run: pnpm run check-all
+
+      - name: Run tests
+        run: pnpm test
+
+  npm-package-smoke:
+    name: npm package smoke install (macOS Node 24)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build package
+        run: pnpm run build
+
+      - name: Pack npm tarball
+        run: npm pack
+
+      - name: Install tarball in fresh npm consumer
+        run: |
+          TARBALL="$(node -e "import { readdirSync } from 'node:fs'; const tarball = readdirSync('.').find((entry) => entry.endsWith('.tgz')); if (!tarball) throw new Error('npm pack did not produce a tarball'); process.stdout.write(tarball);")"
+          CONSUMER_DIR="$(mktemp -d)"
+          cp "$TARBALL" "$CONSUMER_DIR/"
+          cd "$CONSUMER_DIR"
+          npm init -y
+          npm install "./$TARBALL"
+          node --input-type=module -e "await import('@dymoo/fusion'); console.log('ok');"
+          npx --yes --package="@dymoo/fusion" fusion --version

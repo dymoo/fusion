@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+*.env
+.env.*
+!.env.example
+coverage/
+tmp/
+package-lock.json
+.opencode/
+# Local runtime config + daemon state (never commit secrets)
+config.yaml
+config.local.yaml
+.fusion/
